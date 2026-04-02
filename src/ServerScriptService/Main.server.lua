@@ -1,6 +1,25 @@
 local CollectionService = game:GetService("CollectionService")
 
-local NpcService = require(script.Parent.AI.NpcService)
+local function markTaggedNpc(attributeName, value)
+	for _, npcModel in ipairs(CollectionService:GetTagged("CombatNpc")) do
+		if npcModel:IsA("Model") then
+			npcModel:SetAttribute(attributeName, value)
+		end
+	end
+end
+
+markTaggedNpc("NpcBootScriptLoaded", true)
+
+local ok, NpcServiceOrError = pcall(function()
+	return require(script.Parent.AI.NpcService)
+end)
+
+if not ok then
+	markTaggedNpc("NpcBootError", tostring(NpcServiceOrError))
+	error(("[NpcAI] Failed to boot NpcService: %s"):format(tostring(NpcServiceOrError)))
+end
+
+local NpcService = NpcServiceOrError
 
 local npcService = NpcService.new()
 
@@ -48,7 +67,10 @@ local defaultConfig = {
 }
 
 local function registerNpc(model)
+	model:SetAttribute("NpcRegistrationState", "Registering")
+
 	if npcService:HasNpc(model) then
+		model:SetAttribute("NpcRegistrationState", "Active")
 		return
 	end
 
@@ -56,6 +78,8 @@ local function registerNpc(model)
 	local root = model:FindFirstChild("HumanoidRootPart")
 
 	if not humanoid or not root then
+		model:SetAttribute("NpcRegistrationState", "MissingParts")
+		model:SetAttribute("NpcControllerError", "Humanoid or HumanoidRootPart missing")
 		warn(("[NpcAI] Skipping %s because it is missing Humanoid or HumanoidRootPart"):format(model:GetFullName()))
 		return
 	end
@@ -67,6 +91,15 @@ local function registerNpc(model)
 	for _, descendant in ipairs(model:GetDescendants()) do
 		if descendant:IsA("BasePart") then
 			descendant.Anchored = false
+
+			if descendant.Name == "HumanoidRootPart" or descendant:IsA("MeshPart") then
+				descendant.CanCollide = false
+			end
+
+			if descendant.Parent and descendant.Parent:IsA("Accessory") then
+				descendant.CanCollide = false
+				descendant.Massless = true
+			end
 		end
 	end
 
@@ -75,6 +108,8 @@ local function registerNpc(model)
 	end
 
 	humanoid.AutoRotate = true
+	humanoid.PlatformStand = false
+	humanoid.Sit = false
 	if humanoid.UseJumpPower then
 		humanoid.JumpPower = math.max(humanoid.JumpPower, 46)
 	else
@@ -85,7 +120,12 @@ local function registerNpc(model)
 		root:SetNetworkOwner(nil)
 	end)
 
-	npcService:RegisterNpc(model, defaultConfig)
+	local controller = npcService:RegisterNpc(model, defaultConfig)
+	if controller then
+		model:SetAttribute("NpcRegistrationState", "Active")
+	else
+		model:SetAttribute("NpcRegistrationState", "ControllerFailed")
+	end
 end
 
 for _, npcModel in ipairs(CollectionService:GetTagged("CombatNpc")) do
@@ -94,6 +134,7 @@ end
 
 CollectionService:GetInstanceAddedSignal("CombatNpc"):Connect(function(instance)
 	if instance:IsA("Model") then
+		instance:SetAttribute("NpcBootScriptLoaded", true)
 		registerNpc(instance)
 	end
 end)
@@ -101,6 +142,17 @@ end)
 CollectionService:GetInstanceRemovedSignal("CombatNpc"):Connect(function(instance)
 	if instance:IsA("Model") then
 		npcService:RemoveNpc(instance)
+	end
+end)
+
+task.spawn(function()
+	while true do
+		task.wait(1)
+		for _, npcModel in ipairs(CollectionService:GetTagged("CombatNpc")) do
+			if npcModel:IsA("Model") then
+				registerNpc(npcModel)
+			end
+		end
 	end
 end)
 

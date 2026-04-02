@@ -14,6 +14,14 @@ local DEFAULT_ANIMATION_IDS = {
 	},
 }
 
+local function cloneList(values)
+	local result = {}
+	for index, value in ipairs(values or {}) do
+		result[index] = value
+	end
+	return result
+end
+
 local function ensureAnimator(humanoid)
 	local animator = humanoid:FindFirstChildOfClass("Animator")
 	if animator then
@@ -73,6 +81,70 @@ local function resolveAnimationIds(model, stateName)
 	return DEFAULT_ANIMATION_IDS[stateName], "Default"
 end
 
+local function loadTrack(animator, animationId, stateName, index)
+	local animation = createAnimation(animationId, stateName .. tostring(index))
+	local ok, trackOrError = pcall(function()
+		return animator:LoadAnimation(animation)
+	end)
+
+	animation:Destroy()
+
+	if not ok then
+		return nil, tostring(trackOrError)
+	end
+
+	local track = trackOrError
+	track.Priority = if stateName == "Jump" then Enum.AnimationPriority.Action else Enum.AnimationPriority.Movement
+	track.Looped = stateName ~= "Jump"
+	return track, nil
+end
+
+local function loadTracksForState(model, animator, stateName)
+	local sourcesToTry = {}
+
+	local idsFromAttribute, attributeSource = resolveAnimationIds(model, stateName)
+	if attributeSource == "Attribute" and idsFromAttribute then
+		table.insert(sourcesToTry, {
+			Source = "Attribute",
+			Ids = idsFromAttribute,
+		})
+	end
+
+	local idsFromAnimate = collectAnimationIdsFromAnimate(model, stateName)
+	if idsFromAnimate then
+		table.insert(sourcesToTry, {
+			Source = "Animate",
+			Ids = idsFromAnimate,
+		})
+	end
+
+	table.insert(sourcesToTry, {
+		Source = "Default",
+		Ids = cloneList(DEFAULT_ANIMATION_IDS[stateName]),
+	})
+
+	local lastError = nil
+
+	for _, candidate in ipairs(sourcesToTry) do
+		local tracks = {}
+
+		for index, animationId in ipairs(candidate.Ids or {}) do
+			local track, errorMessage = loadTrack(animator, animationId, stateName, index)
+			if track then
+				table.insert(tracks, track)
+			else
+				lastError = errorMessage
+			end
+		end
+
+		if #tracks > 0 then
+			return tracks, candidate.Source, lastError
+		end
+	end
+
+	return {}, "Failed", lastError
+end
+
 function NpcAnimationController.new(model, humanoid)
 	local animator = ensureAnimator(humanoid)
 
@@ -85,18 +157,14 @@ function NpcAnimationController.new(model, humanoid)
 	self.CurrentIndex = 1
 	self.CurrentTrack = nil
 	self.SourceByState = {}
+	self.LoadErrors = {}
 
 	for _, stateName in ipairs({ "Idle", "Walk", "Jump" }) do
-		local ids, source = resolveAnimationIds(model, stateName)
+		local tracks, source, loadError = loadTracksForState(model, animator, stateName)
 		self.SourceByState[stateName] = source
-		self.Tracks[stateName] = {}
-
-		for index, animationId in ipairs(ids or {}) do
-			local animation = createAnimation(animationId, stateName .. tostring(index))
-			local track = animator:LoadAnimation(animation)
-			track.Priority = if stateName == "Jump" then Enum.AnimationPriority.Action else Enum.AnimationPriority.Movement
-			track.Looped = stateName ~= "Jump"
-			self.Tracks[stateName][index] = track
+		self.Tracks[stateName] = tracks
+		if loadError then
+			self.LoadErrors[stateName] = loadError
 		end
 	end
 
@@ -105,6 +173,11 @@ function NpcAnimationController.new(model, humanoid)
 		self.SourceByState.Walk or "None",
 		self.SourceByState.Jump or "None"
 	))
+	model:SetAttribute("AnimationLoadError", table.concat({
+		self.LoadErrors.Idle or "",
+		self.LoadErrors.Walk or "",
+		self.LoadErrors.Jump or "",
+	}, " | "))
 
 	return self
 end
