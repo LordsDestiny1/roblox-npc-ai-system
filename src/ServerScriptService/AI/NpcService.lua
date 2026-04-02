@@ -1,13 +1,57 @@
 local RunService = game:GetService("RunService")
 
-local NpcController = require(script.Parent.NpcController)
-local PathPlanner = require(script.Parent.PathPlanner)
-local ThreatService = require(script.Parent.ThreatService)
-
 local NpcService = {}
 NpcService.__index = NpcService
 
+local cachedNpcController = nil
+local cachedPathPlanner = nil
+local cachedThreatService = nil
+
+local function requireChildModule(moduleName)
+	local moduleScript = script.Parent:FindFirstChild(moduleName)
+	if not moduleScript then
+		error(("[NpcAI] Missing module %s"):format(moduleName))
+	end
+
+	local ok, moduleOrError = pcall(function()
+		return require(moduleScript)
+	end)
+
+	if not ok then
+		error(("[NpcAI] Failed to load %s: %s"):format(moduleName, tostring(moduleOrError)))
+	end
+
+	return moduleOrError
+end
+
+local function getNpcController()
+	if not cachedNpcController then
+		cachedNpcController = requireChildModule("NpcController")
+	end
+
+	return cachedNpcController
+end
+
+local function getPathPlanner()
+	if not cachedPathPlanner then
+		cachedPathPlanner = requireChildModule("PathPlanner")
+	end
+
+	return cachedPathPlanner
+end
+
+local function getThreatService()
+	if not cachedThreatService then
+		cachedThreatService = requireChildModule("ThreatService")
+	end
+
+	return cachedThreatService
+end
+
 function NpcService.new()
+	local PathPlanner = getPathPlanner()
+	local ThreatService = getThreatService()
+
 	local self = setmetatable({}, NpcService)
 	self._controllers = {}
 	self._pathPlanner = PathPlanner.new()
@@ -25,6 +69,7 @@ end
 
 function NpcService:RegisterNpc(model, config)
 	local ok, controllerOrError = pcall(function()
+		local NpcController = getNpcController()
 		return NpcController.new(model, config, self._threatService, self._pathPlanner)
 	end)
 

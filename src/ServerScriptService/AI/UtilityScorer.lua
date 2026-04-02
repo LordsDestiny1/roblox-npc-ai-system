@@ -8,10 +8,29 @@ function UtilityScorer.Score(context)
 	local healthRatio = context.HealthRatio or 1
 	local hasTarget = context.TargetPlayer ~= nil
 
-	scores.Patrol = if not hasTarget then 42 else 2
-	scores.Chase = if hasTarget then 72 + math.max(0, 36 - targetDistance) else 0
-	scores.Retreat = if healthRatio < 0.18 and hasTarget and targetDistance < 12 then 88 else 0
-	scores.Return = if leashDistance > context.MaxLeashDistance then 140 else 0
+	if not hasTarget then
+		scores.Patrol = 42
+	else
+		scores.Patrol = 2
+	end
+
+	if hasTarget then
+		scores.Chase = 72 + math.max(0, 36 - targetDistance)
+	else
+		scores.Chase = 0
+	end
+
+	if healthRatio < 0.18 and hasTarget and targetDistance < 12 then
+		scores.Retreat = 88
+	else
+		scores.Retreat = 0
+	end
+
+	if leashDistance > context.MaxLeashDistance then
+		scores.Return = 140
+	else
+		scores.Return = 0
+	end
 
 	return scores
 end

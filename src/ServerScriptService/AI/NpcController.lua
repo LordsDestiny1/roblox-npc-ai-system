@@ -1,11 +1,52 @@
 local Workspace = game:GetService("Workspace")
 
-local NpcAnimationController = require(script.Parent.NpcAnimationController)
-local TacticalPlanner = require(script.Parent.TacticalPlanner)
-local UtilityScorer = require(script.Parent.UtilityScorer)
-
 local NpcController = {}
 NpcController.__index = NpcController
+
+local cachedNpcAnimationController = nil
+local cachedTacticalPlanner = nil
+local cachedUtilityScorer = nil
+
+local function requireChildModule(moduleName)
+	local moduleScript = script.Parent:FindFirstChild(moduleName)
+	if not moduleScript then
+		error(("[NpcAI] Missing module %s"):format(moduleName))
+	end
+
+	local ok, moduleOrError = pcall(function()
+		return require(moduleScript)
+	end)
+
+	if not ok then
+		error(("[NpcAI] Failed to load %s: %s"):format(moduleName, tostring(moduleOrError)))
+	end
+
+	return moduleOrError
+end
+
+local function getNpcAnimationController()
+	if not cachedNpcAnimationController then
+		cachedNpcAnimationController = requireChildModule("NpcAnimationController")
+	end
+
+	return cachedNpcAnimationController
+end
+
+local function getTacticalPlanner()
+	if not cachedTacticalPlanner then
+		cachedTacticalPlanner = requireChildModule("TacticalPlanner")
+	end
+
+	return cachedTacticalPlanner
+end
+
+local function getUtilityScorer()
+	if not cachedUtilityScorer then
+		cachedUtilityScorer = requireChildModule("UtilityScorer")
+	end
+
+	return cachedUtilityScorer
+end
 
 local function getRoot(model)
 	return model:FindFirstChild("HumanoidRootPart")
@@ -18,7 +59,7 @@ end
 local function hashName(name)
 	local total = 0
 	for index = 1, #name do
-		total += string.byte(name, index) * index
+		total = total + string.byte(name, index) * index
 	end
 
 	return total
@@ -29,6 +70,8 @@ function NpcController.new(model, config, threatService, pathPlanner)
 	local root = getRoot(model)
 	assert(humanoid and root, "NPC model requires Humanoid and HumanoidRootPart")
 
+	local AnimationController = getNpcAnimationController()
+
 	local self = setmetatable({}, NpcController)
 	self.Model = model
 	self.Humanoid = humanoid
@@ -36,7 +79,7 @@ function NpcController.new(model, config, threatService, pathPlanner)
 	self.Config = config
 	self.ThreatService = threatService
 	self.PathPlanner = pathPlanner
-	self.AnimationController = NpcAnimationController.new(model, humanoid)
+	self.AnimationController = AnimationController.new(model, humanoid)
 	self.State = "Patrol"
 	self.SpawnPosition = root.Position
 	self.CurrentTarget = nil
@@ -54,7 +97,12 @@ function NpcController.new(model, config, threatService, pathPlanner)
 	self.RoutePlan = nil
 	self.RouteMode = "Idle"
 	self.JumpStateUntil = 0
-	self.PreferredSide = if hashName(model.Name) % 2 == 0 then "Left" else "Right"
+	self.PreferredSide = "Right"
+
+	if hashName(model.Name) % 2 == 0 then
+		self.PreferredSide = "Left"
+	end
+
 	return self
 end
 
@@ -73,8 +121,17 @@ end
 
 function NpcController:_getContext()
 	local targetCharacter = self.CurrentTarget and self.CurrentTarget.Character
-	local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
-	local targetDistance = if targetRoot then (targetRoot.Position - self.Root.Position).Magnitude else math.huge
+	local targetRoot = nil
+	local targetDistance = math.huge
+
+	if targetCharacter then
+		targetRoot = targetCharacter:FindFirstChild("HumanoidRootPart")
+	end
+
+	if targetRoot then
+		targetDistance = (targetRoot.Position - self.Root.Position).Magnitude
+	end
+
 	local leashDistance = (self.Root.Position - self.SpawnPosition).Magnitude
 
 	return {
@@ -90,10 +147,9 @@ function NpcController:_refreshThreat()
 	local previousTarget = self.CurrentTarget
 
 	self.ThreatService:SeedFromNearbyPlayers(self.Model, self.Root.Position, self.Config.AggroRadius)
-	local targetPlayer = self.ThreatService:GetBestTarget(self.Model, self.Root.Position, self.Config.AggroRadius)
-	self.CurrentTarget = targetPlayer
+	self.CurrentTarget = self.ThreatService:GetBestTarget(self.Model, self.Root.Position, self.Config.AggroRadius)
 
-	if previousTarget ~= targetPlayer then
+	if previousTarget ~= self.CurrentTarget then
 		self.RoutePlan = nil
 		self.LastPlannedDestination = nil
 	end
@@ -161,7 +217,11 @@ function NpcController:_hasLineOfSight(destination, targetCharacter)
 		return true
 	end
 
-	return targetCharacter ~= nil and result.Instance:IsDescendantOf(targetCharacter)
+	if targetCharacter and result.Instance:IsDescendantOf(targetCharacter) then
+		return true
+	end
+
+	return false
 end
 
 function NpcController:_needsReplan(destination, distanceThreshold)
@@ -178,6 +238,7 @@ function NpcController:_needsReplan(destination, distanceThreshold)
 end
 
 function NpcController:_resolveRoutePlan(targetCharacter, targetRoot)
+	local TacticalPlanner = getTacticalPlanner()
 	local hasLineOfSight = self:_hasLineOfSight(targetRoot.Position, targetCharacter)
 	local needsNewRoute = self.RoutePlan == nil or os.clock() >= self.RoutePlan.ExpiresAt
 
@@ -243,7 +304,13 @@ function NpcController:_replan(destination, targetCharacter)
 		self.DirectMoveTarget = destination
 		self.LastWaypointDistance = (destination - self.Root.Position).Magnitude
 		self.LastProgressClock = os.clock()
-		self.LastPathError = if self:_hasLineOfSight(destination, targetCharacter) then "Direct fallback" else "Blind direct fallback"
+
+		if self:_hasLineOfSight(destination, targetCharacter) then
+			self.LastPathError = "Direct fallback"
+		else
+			self.LastPathError = "Blind direct fallback"
+		end
+
 		return true
 	end
 
@@ -252,9 +319,13 @@ function NpcController:_replan(destination, targetCharacter)
 end
 
 function NpcController:_advanceWaypoint()
-	local waypoint = self.CurrentWaypoints and self.CurrentWaypoints[self.CurrentWaypointIndex]
+	local waypoint = nil
+	if self.CurrentWaypoints then
+		waypoint = self.CurrentWaypoints[self.CurrentWaypointIndex]
+	end
+
 	while waypoint and (waypoint.Position - self.Root.Position).Magnitude <= self.Config.WaypointReachedDistance do
-		self.CurrentWaypointIndex += 1
+		self.CurrentWaypointIndex = self.CurrentWaypointIndex + 1
 		self.LastWaypointDistance = math.huge
 		self.LastProgressClock = os.clock()
 		waypoint = self.CurrentWaypoints[self.CurrentWaypointIndex]
@@ -429,7 +500,10 @@ end
 
 function NpcController:_runChase()
 	local targetCharacter = self.CurrentTarget and self.CurrentTarget.Character
-	local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+	local targetRoot = nil
+	if targetCharacter then
+		targetRoot = targetCharacter:FindFirstChild("HumanoidRootPart")
+	end
 	if not targetRoot then
 		return
 	end
@@ -443,7 +517,6 @@ function NpcController:_runChase()
 	end
 
 	self:_followNavigation(targetCharacter)
-
 	self:_tryAttackTarget(targetCharacter, targetRoot)
 end
 
@@ -460,7 +533,11 @@ function NpcController:_runRetreat()
 	self.RouteMode = "Retreat"
 
 	local delta = self.Root.Position - targetRoot.Position
-	local awayDirection = if delta.Magnitude > 0.01 then delta.Unit else Vector3.new(0, 0, -1)
+	local awayDirection = Vector3.new(0, 0, -1)
+	if delta.Magnitude > 0.01 then
+		awayDirection = delta.Unit
+	end
+
 	local retreatPoint = self:_clampToLeash(self.Root.Position + awayDirection * self.Config.RetreatDistance)
 
 	if self:_needsReplan(retreatPoint, self.Config.PathDestinationChangeThreshold) and os.clock() - self.LastPlanClock >= self.Config.PathReplanInterval then
@@ -492,6 +569,7 @@ function NpcController:Step(deltaTime)
 
 	self:_refreshThreat()
 
+	local UtilityScorer = getUtilityScorer()
 	local scores = UtilityScorer.Score(self:_getContext())
 	self.State = UtilityScorer.Pick(scores)
 
@@ -509,13 +587,12 @@ function NpcController:Step(deltaTime)
 
 	if self.AnimationController then
 		local humanoidState = self.Humanoid:GetState()
-		local movementState = if os.clock() <= self.JumpStateUntil
+		local movementState = "Grounded"
+		if os.clock() <= self.JumpStateUntil
 			or humanoidState == Enum.HumanoidStateType.Jumping
 			or humanoidState == Enum.HumanoidStateType.Freefall
 		then
-			"Jump"
-		else
-			"Grounded"
+			movementState = "Jump"
 		end
 
 		self.AnimationController:Update(self.State, self.Root.AssemblyLinearVelocity.Magnitude, movementState)

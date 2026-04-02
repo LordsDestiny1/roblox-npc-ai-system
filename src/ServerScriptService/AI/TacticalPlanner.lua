@@ -16,6 +16,14 @@ local function hasToken(haystack, needle)
 	return string.find(haystack, needle, 1, true) ~= nil
 end
 
+local function choose(condition, whenTrue, whenFalse)
+	if condition then
+		return whenTrue
+	end
+
+	return whenFalse
+end
+
 local function repeatPenalty(mode, previousMode)
 	if not previousMode or previousMode == "" then
 		return 1
@@ -43,14 +51,14 @@ end
 local function weightedPick(options)
 	local totalWeight = 0
 	for _, option in ipairs(options) do
-		totalWeight += option.Weight
+		totalWeight = totalWeight + option.Weight
 	end
 
 	local roll = math.random() * totalWeight
 	local cumulative = 0
 
 	for _, option in ipairs(options) do
-		cumulative += option.Weight
+		cumulative = cumulative + option.Weight
 		if roll <= cumulative then
 			return option
 		end
@@ -95,68 +103,67 @@ function TacticalPlanner.BuildRoute(npcPosition, targetRoot, config, context)
 	local jitterScale = math.max(0, math.floor(config.RouteJitterMax * 100 + 0.5))
 	local routeJitter = math.random(-jitterScale, jitterScale) / 100
 
-	local options = {
-	}
+	local options = {}
 
-	addOption(options, "DirectPressure", targetPosition, if hasLineOfSight then 18 else 8)
-	addOption(options, "InterceptLead", targetPosition + targetVelocity * leadSeconds, if targetSpeed > 3 then 26 else 10)
+	addOption(options, "DirectPressure", targetPosition, choose(hasLineOfSight, 18, 8))
+	addOption(options, "InterceptLead", targetPosition + targetVelocity * leadSeconds, choose(targetSpeed > 3, 26, 10))
 	addOption(options, "FlankLeft", targetPosition - right * flankOffset + motionDirection * 6, 18)
 	addOption(options, "FlankRight", targetPosition + right * flankOffset + motionDirection * 6, 18)
-	addOption(options, "WideLeft", targetPosition - right * wideOffset - motionDirection * cutoffDepth, if distance > 15 then 17 else 6)
-	addOption(options, "WideRight", targetPosition + right * wideOffset - motionDirection * cutoffDepth, if distance > 15 then 17 else 6)
-	addOption(options, "BackdoorLeft", targetPosition - right * (wideOffset * 0.85) + backward * backdoorDepth, if distance > 11 then 14 else 6)
-	addOption(options, "BackdoorRight", targetPosition + right * (wideOffset * 0.85) + backward * backdoorDepth, if distance > 11 then 14 else 6)
-	addOption(options, "PinchLeft", targetPosition + motionDirection * pinchDepth - right * (flankOffset * 0.65), if distance < 24 then 13 else 5)
-	addOption(options, "PinchRight", targetPosition + motionDirection * pinchDepth + right * (flankOffset * 0.65), if distance < 24 then 13 else 5)
-	addOption(options, "Cutoff", targetPosition + motionDirection * cutoffDepth, if distance > 12 or targetSpeed > 2 then 18 else 7)
+	addOption(options, "WideLeft", targetPosition - right * wideOffset - motionDirection * cutoffDepth, choose(distance > 15, 17, 6))
+	addOption(options, "WideRight", targetPosition + right * wideOffset - motionDirection * cutoffDepth, choose(distance > 15, 17, 6))
+	addOption(options, "BackdoorLeft", targetPosition - right * (wideOffset * 0.85) + backward * backdoorDepth, choose(distance > 11, 14, 6))
+	addOption(options, "BackdoorRight", targetPosition + right * (wideOffset * 0.85) + backward * backdoorDepth, choose(distance > 11, 14, 6))
+	addOption(options, "PinchLeft", targetPosition + motionDirection * pinchDepth - right * (flankOffset * 0.65), choose(distance < 24, 13, 5))
+	addOption(options, "PinchRight", targetPosition + motionDirection * pinchDepth + right * (flankOffset * 0.65), choose(distance < 24, 13, 5))
+	addOption(options, "Cutoff", targetPosition + motionDirection * cutoffDepth, choose(distance > 12 or targetSpeed > 2, 18, 7))
 
 	for _, option in ipairs(options) do
-		option.Weight *= repeatPenalty(option.Mode, context.PreviousMode)
+		option.Weight = option.Weight * repeatPenalty(option.Mode, context.PreviousMode)
 
 		if preferredSide == "Left" and hasToken(option.Mode, "Left") then
-			option.Weight *= 1.15
+			option.Weight = option.Weight * 1.15
 		elseif preferredSide == "Right" and hasToken(option.Mode, "Right") then
-			option.Weight *= 1.15
+			option.Weight = option.Weight * 1.15
 		end
 
 		if not hasLineOfSight then
 			if option.Mode == "DirectPressure" then
-				option.Weight *= 0.45
+				option.Weight = option.Weight * 0.45
 			elseif hasToken(option.Mode, "Wide") or hasToken(option.Mode, "Backdoor") then
-				option.Weight *= 1.45
+				option.Weight = option.Weight * 1.45
 			elseif option.Mode == "Cutoff" then
-				option.Weight *= 1.2
+				option.Weight = option.Weight * 1.2
 			end
 		end
 
 		if targetSpeed < 1.5 then
 			if option.Mode == "InterceptLead" then
-				option.Weight *= 0.4
+				option.Weight = option.Weight * 0.4
 			elseif option.Mode == "Cutoff" then
-				option.Weight *= 0.7
+				option.Weight = option.Weight * 0.7
 			end
 		elseif targetSpeed > 7 then
 			if option.Mode == "InterceptLead" or option.Mode == "Cutoff" then
-				option.Weight *= 1.25
+				option.Weight = option.Weight * 1.25
 			end
 		end
 
 		if distance < 10 then
 			if hasToken(option.Mode, "Wide") or hasToken(option.Mode, "Backdoor") then
-				option.Weight *= 1.25
+				option.Weight = option.Weight * 1.25
 			elseif option.Mode == "DirectPressure" then
-				option.Weight *= 0.8
+				option.Weight = option.Weight * 0.8
 			end
 		elseif distance > 30 then
 			if option.Mode == "DirectPressure" or option.Mode == "InterceptLead" then
-				option.Weight *= 1.15
+				option.Weight = option.Weight * 1.15
 			elseif hasToken(option.Mode, "Pinch") then
-				option.Weight *= 0.55
+				option.Weight = option.Weight * 0.55
 			end
 		end
 
 		if context.LastPathError == "Path blocked" and (hasToken(option.Mode, "Wide") or hasToken(option.Mode, "Backdoor")) then
-			option.Weight *= 1.35
+			option.Weight = option.Weight * 1.35
 		end
 	end
 

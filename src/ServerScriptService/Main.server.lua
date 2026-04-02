@@ -21,7 +21,17 @@ end
 
 local NpcService = NpcServiceOrError
 
-local npcService = NpcService.new()
+local newOk, npcServiceOrError = pcall(function()
+	return NpcService.new()
+end)
+
+if not newOk then
+	markTaggedNpc("NpcBootError", tostring(npcServiceOrError))
+	error(("[NpcAI] Failed to construct NpcService: %s"):format(tostring(npcServiceOrError)))
+end
+
+local npcService = npcServiceOrError
+markTaggedNpc("NpcBootError", "")
 
 local defaultConfig = {
 	AggroRadius = 80,
