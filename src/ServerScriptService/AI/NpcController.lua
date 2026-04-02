@@ -65,6 +65,14 @@ local function hashName(name)
 	return total
 end
 
+local function getSurfaceTopY(result)
+	if result.Instance and result.Instance:IsA("BasePart") then
+		return result.Instance.Position.Y + result.Instance.Size.Y * 0.5
+	end
+
+	return result.Position.Y
+end
+
 function NpcController.new(model, config, threatService, pathPlanner)
 	local humanoid = model:FindFirstChildOfClass("Humanoid")
 	local root = getRoot(model)
@@ -97,6 +105,7 @@ function NpcController.new(model, config, threatService, pathPlanner)
 	self.RoutePlan = nil
 	self.RouteMode = "Idle"
 	self.JumpStateUntil = 0
+	self.LastAssistJumpClock = 0
 	self.PreferredSide = "Right"
 
 	if hashName(model.Name) % 2 == 0 then
@@ -343,9 +352,88 @@ function NpcController:_triggerJump(duration)
 		return false
 	end
 
+	self.Humanoid.Jump = true
 	self.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
 	self.JumpStateUntil = math.max(self.JumpStateUntil, os.clock() + duration)
 	return true
+end
+
+function NpcController:_findParkourLanding(destination, targetCharacter)
+	local direction = horizontal(destination - self.Root.Position)
+	if direction.Magnitude < 2 then
+		return nil
+	end
+
+	local directionUnit = direction.Unit
+	local params = self:_createRaycastParams(targetCharacter)
+	local bestLanding = nil
+	local bestRise = -math.huge
+
+	for sampleIndex = 1, self.Config.ParkourMaxSamples do
+		local forwardDistance = math.min(
+			direction.Magnitude,
+			self.Config.ParkourProbeDistance,
+			sampleIndex * self.Config.ParkourSampleStep
+		)
+		local sampleOrigin = self.Root.Position
+			+ Vector3.new(0, self.Config.ParkourLandingProbeHeight, 0)
+			+ directionUnit * forwardDistance
+
+		local landingHit = Workspace:Raycast(sampleOrigin, Vector3.new(0, -self.Config.ParkourLandingProbeDepth, 0), params)
+		if landingHit and (not targetCharacter or not landingHit.Instance:IsDescendantOf(targetCharacter)) then
+			local landingY = getSurfaceTopY(landingHit)
+			local rise = landingY - self.Root.Position.Y
+			if rise >= self.Config.ParkourMinRise and rise <= self.Config.MaxJumpRise then
+				local headOrigin = self.Root.Position + Vector3.new(0, self.Config.ParkourClearanceHeight, 0)
+				local headHit = Workspace:Raycast(headOrigin, directionUnit * forwardDistance, params)
+				if not headHit or (headHit.Position - headOrigin).Magnitude >= forwardDistance - 0.35 then
+					if rise > bestRise then
+						bestRise = rise
+						bestLanding = Vector3.new(
+							landingHit.Position.X,
+							landingY + self.Config.ParkourLandingYOffset,
+							landingHit.Position.Z
+						)
+					end
+				end
+			end
+		end
+	end
+
+	return bestLanding
+end
+
+function NpcController:_tryParkourJump(destination, targetCharacter)
+	local now = os.clock()
+	if now - self.LastAssistJumpClock < self.Config.AssistJumpCooldown then
+		return false
+	end
+
+	local delta = destination - self.Root.Position
+	local horizontalDistance = horizontal(delta).Magnitude
+	local verticalDelta = delta.Y
+
+	if verticalDelta < self.Config.AssistJumpRiseThreshold then
+		return false
+	end
+
+	if verticalDelta > self.Config.MaxJumpRise + 1.5 then
+		return false
+	end
+
+	if horizontalDistance > self.Config.AssistJumpDistance then
+		return false
+	end
+
+	local moveTarget = self:_findParkourLanding(destination, targetCharacter)
+	if not moveTarget then
+		moveTarget = destination
+	end
+
+	self.LastAssistJumpClock = now
+	self.LastPathError = "Parkour jump"
+	self.Humanoid:MoveTo(moveTarget)
+	return self:_triggerJump(0.65)
 end
 
 function NpcController:_maybeJumpForWaypoint(waypoint)
@@ -425,8 +513,12 @@ function NpcController:_followNavigation(targetCharacter)
 		end
 
 		local riseToWaypoint = waypoint.Position.Y - self.Root.Position.Y
+		if riseToWaypoint > 1.25 and self:_tryParkourJump(waypoint.Position, targetCharacter) then
+			return
+		end
+
 		if riseToWaypoint > 1.25 and not self:_probeForwardJump(waypoint.Position, targetCharacter) then
-			self:_clearNavigation()
+			self:_clearNavigation(false)
 			return
 		end
 
@@ -447,6 +539,10 @@ function NpcController:_followNavigation(targetCharacter)
 	end
 
 	if self.DirectMoveTarget then
+		if self:_tryParkourJump(self.DirectMoveTarget, targetCharacter) then
+			return
+		end
+
 		if not self:_probeForwardJump(self.DirectMoveTarget, targetCharacter) then
 			self.DirectMoveTarget = nil
 			return
@@ -517,6 +613,7 @@ function NpcController:_runChase()
 	end
 
 	self:_followNavigation(targetCharacter)
+	self:_tryParkourJump(targetRoot.Position, targetCharacter)
 	self:_tryAttackTarget(targetCharacter, targetRoot)
 end
 
