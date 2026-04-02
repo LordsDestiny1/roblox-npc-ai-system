@@ -1,11 +1,27 @@
-local UtilityScorer = require(script.Parent.UtilityScorer)
+local Workspace = game:GetService("Workspace")
+
 local NpcAnimationController = require(script.Parent.NpcAnimationController)
+local TacticalPlanner = require(script.Parent.TacticalPlanner)
+local UtilityScorer = require(script.Parent.UtilityScorer)
 
 local NpcController = {}
 NpcController.__index = NpcController
 
 local function getRoot(model)
 	return model:FindFirstChild("HumanoidRootPart")
+end
+
+local function horizontal(vector)
+	return Vector3.new(vector.X, 0, vector.Z)
+end
+
+local function hashName(name)
+	local total = 0
+	for index = 1, #name do
+		total += string.byte(name, index) * index
+	end
+
+	return total
 end
 
 function NpcController.new(model, config, threatService, pathPlanner)
@@ -24,23 +40,34 @@ function NpcController.new(model, config, threatService, pathPlanner)
 	self.State = "Patrol"
 	self.SpawnPosition = root.Position
 	self.CurrentTarget = nil
-	self.CurrentPath = nil
+	self.ActivePath = nil
+	self.CurrentWaypoints = nil
 	self.CurrentWaypointIndex = 1
+	self.PathBlockedConnection = nil
 	self.DirectMoveTarget = nil
+	self.LastPlannedDestination = nil
 	self.LastPlanClock = 0
 	self.LastAttackClock = 0
 	self.LastPathError = nil
+	self.LastWaypointDistance = math.huge
+	self.LastProgressClock = os.clock()
+	self.RoutePlan = nil
+	self.RouteMode = "Idle"
+	self.JumpStateUntil = 0
+	self.PreferredSide = if hashName(model.Name) % 2 == 0 then "Left" else "Right"
 	return self
 end
 
 function NpcController:_publishState()
 	self.Model:SetAttribute("AiState", self.State)
+	self.Model:SetAttribute("RouteMode", self.RouteMode)
 	self.Model:SetAttribute("LastPathError", self.LastPathError or "")
+	self.Model:SetAttribute("PreferredSide", self.PreferredSide)
 
 	local billboard = self.Model:FindFirstChild("StateBillboard")
 	local label = billboard and billboard:FindFirstChildOfClass("TextLabel")
 	if label then
-		label.Text = ("%s\n%s"):format(self.Model.Name, self.State)
+		label.Text = ("%s\n%s | %s"):format(self.Model.Name, self.State, self.RouteMode)
 	end
 end
 
@@ -60,61 +87,335 @@ function NpcController:_getContext()
 end
 
 function NpcController:_refreshThreat()
+	local previousTarget = self.CurrentTarget
+
 	self.ThreatService:SeedFromNearbyPlayers(self.Model, self.Root.Position, self.Config.AggroRadius)
 	local targetPlayer = self.ThreatService:GetBestTarget(self.Model, self.Root.Position, self.Config.AggroRadius)
 	self.CurrentTarget = targetPlayer
+
+	if previousTarget ~= targetPlayer then
+		self.RoutePlan = nil
+		self.LastPlannedDestination = nil
+	end
 end
 
-function NpcController:_replan(destination)
-	self.DirectMoveTarget = destination
-	local waypoints = self.PathPlanner:TryPlan(self.Model:GetDebugId(), self.Root.Position, destination)
-	if waypoints then
-		self.CurrentPath = waypoints
-		self.CurrentWaypointIndex = 1
-		self.LastPathError = nil
-		return
+function NpcController:_disconnectPathBlocked()
+	if self.PathBlockedConnection then
+		self.PathBlockedConnection:Disconnect()
+		self.PathBlockedConnection = nil
+	end
+end
+
+function NpcController:_clearNavigation(clearDirectMove)
+	self:_disconnectPathBlocked()
+
+	if self.ActivePath then
+		pcall(function()
+			self.ActivePath:Destroy()
+		end)
 	end
 
-	self.CurrentPath = nil
+	self.ActivePath = nil
+	self.CurrentWaypoints = nil
 	self.CurrentWaypointIndex = 1
-	self.LastPathError = "Pathfinding fallback"
+	self.LastWaypointDistance = math.huge
+	self.LastProgressClock = os.clock()
+
+	if clearDirectMove ~= false then
+		self.DirectMoveTarget = nil
+	end
 end
 
-function NpcController:_followPath()
-	if not self.CurrentPath then
-		if self.DirectMoveTarget then
-			self.Humanoid:MoveTo(self.DirectMoveTarget)
+function NpcController:_clampToLeash(destination)
+	local offset = horizontal(destination - self.SpawnPosition)
+	if offset.Magnitude <= self.Config.MaxLeashDistance then
+		return destination
+	end
+
+	local safeRadius = math.max(4, self.Config.MaxLeashDistance - 4)
+	local clamped = offset.Unit * safeRadius
+	return Vector3.new(self.SpawnPosition.X + clamped.X, destination.Y, self.SpawnPosition.Z + clamped.Z)
+end
+
+function NpcController:_createRaycastParams(extraIgnored)
+	local ignored = { self.Model }
+	if extraIgnored then
+		table.insert(ignored, extraIgnored)
+	end
+
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = ignored
+	return params
+end
+
+function NpcController:_hasLineOfSight(destination, targetCharacter)
+	local direction = destination - self.Root.Position
+	if direction.Magnitude <= 0.5 then
+		return true
+	end
+
+	local params = self:_createRaycastParams()
+	local result = Workspace:Raycast(self.Root.Position + Vector3.new(0, 1.5, 0), direction, params)
+	if not result then
+		return true
+	end
+
+	return targetCharacter ~= nil and result.Instance:IsDescendantOf(targetCharacter)
+end
+
+function NpcController:_needsReplan(destination, distanceThreshold)
+	if not self.LastPlannedDestination then
+		return true
+	end
+
+	if not self.ActivePath and not self.DirectMoveTarget then
+		return true
+	end
+
+	local delta = horizontal(destination - self.LastPlannedDestination)
+	return delta.Magnitude >= distanceThreshold
+end
+
+function NpcController:_resolveRoutePlan(targetCharacter, targetRoot)
+	local hasLineOfSight = self:_hasLineOfSight(targetRoot.Position, targetCharacter)
+	local needsNewRoute = self.RoutePlan == nil or os.clock() >= self.RoutePlan.ExpiresAt
+
+	if not needsNewRoute and self.RoutePlan.TargetSnapshot then
+		local routeDrift = horizontal(targetRoot.Position - self.RoutePlan.TargetSnapshot).Magnitude
+		if routeDrift >= self.Config.RouteRefreshDistance then
+			needsNewRoute = true
 		end
-		return
 	end
 
-	local waypoint = self.CurrentPath[self.CurrentWaypointIndex]
-	if not waypoint then
-		return
+	if not needsNewRoute and self.RoutePlan.Mode == "DirectPressure" and not hasLineOfSight then
+		needsNewRoute = true
 	end
 
-	self.Humanoid:MoveTo(waypoint.Position)
-	if (waypoint.Position - self.Root.Position).Magnitude <= 3 then
+	if needsNewRoute then
+		self.RoutePlan = TacticalPlanner.BuildRoute(self.Root.Position, targetRoot, self.Config, {
+			HasLineOfSight = hasLineOfSight,
+			PreviousMode = self.RouteMode,
+			PreferredSide = self.PreferredSide,
+			LastPathError = self.LastPathError,
+		})
+	end
+
+	self.RouteMode = self.RoutePlan.Mode
+	return self.RoutePlan
+end
+
+function NpcController:_replan(destination, targetCharacter)
+	destination = self:_clampToLeash(destination)
+	self.LastPlannedDestination = destination
+	self:_clearNavigation()
+
+	local plan, errorMessage = self.PathPlanner:TryPlan(
+		self.Model:GetDebugId(),
+		self.Root.Position,
+		destination,
+		self.Config.PathOptions
+	)
+
+	if plan then
+		self.ActivePath = plan.Path
+		self.CurrentWaypoints = plan.Waypoints
+		self.CurrentWaypointIndex = 1
+		self.LastWaypointDistance = math.huge
+		self.LastProgressClock = os.clock()
+		self.LastPathError = nil
+
+		if self.CurrentWaypoints[1] and (self.CurrentWaypoints[1].Position - self.Root.Position).Magnitude <= self.Config.WaypointReachedDistance then
+			self.CurrentWaypointIndex = 2
+		end
+
+		self.PathBlockedConnection = self.ActivePath.Blocked:Connect(function(blockedWaypointIndex)
+			if blockedWaypointIndex >= self.CurrentWaypointIndex then
+				self.LastPathError = "Path blocked"
+				self:_clearNavigation()
+			end
+		end)
+
+		return true
+	end
+
+	if self.Config.AllowDirectMoveFallback and self:_hasLineOfSight(destination, targetCharacter) then
+		self.DirectMoveTarget = destination
+		self.LastPathError = "Direct fallback"
+		return true
+	end
+
+	self.LastPathError = tostring(errorMessage or "No valid path")
+	return false
+end
+
+function NpcController:_advanceWaypoint()
+	local waypoint = self.CurrentWaypoints and self.CurrentWaypoints[self.CurrentWaypointIndex]
+	while waypoint and (waypoint.Position - self.Root.Position).Magnitude <= self.Config.WaypointReachedDistance do
 		self.CurrentWaypointIndex += 1
+		self.LastWaypointDistance = math.huge
+		self.LastProgressClock = os.clock()
+		waypoint = self.CurrentWaypoints[self.CurrentWaypointIndex]
+	end
 
-		if self.CurrentWaypointIndex > #self.CurrentPath then
-			self.CurrentPath = nil
+	if not waypoint then
+		self:_clearNavigation(false)
+	end
+
+	return waypoint
+end
+
+function NpcController:_triggerJump(duration)
+	if self.Humanoid.FloorMaterial == Enum.Material.Air then
+		return false
+	end
+
+	self.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+	self.JumpStateUntil = math.max(self.JumpStateUntil, os.clock() + duration)
+	return true
+end
+
+function NpcController:_maybeJumpForWaypoint(waypoint)
+	if waypoint.Action ~= Enum.PathWaypointAction.Jump then
+		return true
+	end
+
+	local rise = waypoint.Position.Y - self.Root.Position.Y
+	if rise > self.Config.MaxJumpRise then
+		self.LastPathError = ("Jump too high (%.1f)"):format(rise)
+		self:_clearNavigation()
+		return false
+	end
+
+	self:_triggerJump(0.45)
+	return true
+end
+
+function NpcController:_probeForwardJump(destination, targetCharacter)
+	local direction = horizontal(destination - self.Root.Position)
+	if direction.Magnitude < 2 then
+		return true
+	end
+
+	local probeDistance = math.min(self.Config.ForwardJumpProbeDistance, direction.Magnitude)
+	local directionUnit = direction.Unit
+	local params = self:_createRaycastParams(targetCharacter)
+	local lowOrigin = self.Root.Position + Vector3.new(0, 2, 0)
+	local lowHit = Workspace:Raycast(lowOrigin, directionUnit * probeDistance, params)
+	if not lowHit then
+		return true
+	end
+
+	if targetCharacter and lowHit.Instance:IsDescendantOf(targetCharacter) then
+		return true
+	end
+
+	local hitDistance = (lowHit.Position - lowOrigin).Magnitude
+	if hitDistance > 4 then
+		return true
+	end
+
+	local obstacleTop = lowHit.Position.Y
+	if lowHit.Instance:IsA("BasePart") then
+		obstacleTop = lowHit.Instance.Position.Y + lowHit.Instance.Size.Y * 0.5
+	end
+
+	local rise = obstacleTop - self.Root.Position.Y
+	if rise > self.Config.MaxJumpRise then
+		self.LastPathError = ("Obstacle too tall (%.1f)"):format(rise)
+		return false
+	end
+
+	local highOrigin = self.Root.Position + Vector3.new(0, self.Config.MaxJumpRise + 2, 0)
+	local highHit = Workspace:Raycast(highOrigin, directionUnit * probeDistance, params)
+	if highHit and highHit.Instance == lowHit.Instance then
+		self.LastPathError = "Obstacle blocks jump lane"
+		return false
+	end
+
+	if rise > 1 then
+		self:_triggerJump(0.5)
+	end
+
+	return true
+end
+
+function NpcController:_followNavigation(targetCharacter)
+	if self.CurrentWaypoints then
+		local waypoint = self:_advanceWaypoint()
+		if not waypoint then
+			return
 		end
+
+		if not self:_maybeJumpForWaypoint(waypoint) then
+			return
+		end
+
+		if not self:_probeForwardJump(waypoint.Position, targetCharacter) then
+			self:_clearNavigation()
+			return
+		end
+
+		local distance = (waypoint.Position - self.Root.Position).Magnitude
+		if distance < self.LastWaypointDistance - 0.25 then
+			self.LastProgressClock = os.clock()
+		end
+		self.LastWaypointDistance = distance
+
+		if os.clock() - self.LastProgressClock > self.Config.StuckReplanSeconds then
+			self.LastPathError = "Navigation stalled"
+			self:_clearNavigation()
+			return
+		end
+
+		self.Humanoid:MoveTo(waypoint.Position)
+		return
+	end
+
+	if self.DirectMoveTarget then
+		if not self:_hasLineOfSight(self.DirectMoveTarget, targetCharacter) then
+			self.LastPathError = "Direct route obstructed"
+			self.DirectMoveTarget = nil
+			return
+		end
+
+		if not self:_probeForwardJump(self.DirectMoveTarget, targetCharacter) then
+			self.DirectMoveTarget = nil
+			return
+		end
+
+		if (self.DirectMoveTarget - self.Root.Position).Magnitude <= self.Config.WaypointReachedDistance then
+			self.DirectMoveTarget = nil
+			return
+		end
+
+		self.Humanoid:MoveTo(self.DirectMoveTarget)
 	end
 end
 
 function NpcController:_runPatrol()
-	if not self.CurrentPath or self.CurrentWaypointIndex > #self.CurrentPath then
+	if not self.RoutePlan or os.clock() >= self.RoutePlan.ExpiresAt then
 		local patrolOffset = Vector3.new(
 			math.random(-self.Config.PatrolRadius, self.Config.PatrolRadius),
 			0,
 			math.random(-self.Config.PatrolRadius, self.Config.PatrolRadius)
 		)
 
-		self:_replan(self.SpawnPosition + patrolOffset)
+		self.RoutePlan = {
+			Mode = "PatrolArc",
+			Destination = self.SpawnPosition + patrolOffset,
+			ExpiresAt = os.clock() + math.random(150, 300) / 100,
+		}
 	end
 
-	self:_followPath()
+	self.RouteMode = self.RoutePlan.Mode
+
+	if self:_needsReplan(self.RoutePlan.Destination, self.Config.PathDestinationChangeThreshold) and os.clock() - self.LastPlanClock >= self.Config.PathReplanInterval then
+		self.LastPlanClock = os.clock()
+		self:_replan(self.RoutePlan.Destination)
+	end
+
+	self:_followNavigation(nil)
 end
 
 function NpcController:_runChase()
@@ -124,19 +425,28 @@ function NpcController:_runChase()
 		return
 	end
 
-	if os.clock() - self.LastPlanClock > 0.8 then
+	local routePlan = self:_resolveRoutePlan(targetCharacter, targetRoot)
+	local destination = self:_clampToLeash(routePlan.Destination)
+
+	if self:_needsReplan(destination, self.Config.PathDestinationChangeThreshold) and os.clock() - self.LastPlanClock >= self.Config.PathReplanInterval then
 		self.LastPlanClock = os.clock()
-		self:_replan(targetRoot.Position)
+		self:_replan(destination, targetCharacter)
 	end
 
-	self:_followPath()
+	self:_followNavigation(targetCharacter)
 
-	if (targetRoot.Position - self.Root.Position).Magnitude <= self.Config.AttackRange and os.clock() - self.LastAttackClock >= self.Config.AttackCooldown then
+	if (targetRoot.Position - self.Root.Position).Magnitude <= self.Config.AttackRange
+		and os.clock() - self.LastAttackClock >= self.Config.AttackCooldown
+		and self:_hasLineOfSight(targetRoot.Position, targetCharacter)
+	then
 		local humanoid = targetCharacter:FindFirstChildOfClass("Humanoid")
 		if humanoid and humanoid.Health > 0 then
 			self.LastAttackClock = os.clock()
-			humanoid:TakeDamage(self.Config.Damage)
-			self.ThreatService:AddDamageThreat(self.Model, self.CurrentTarget, self.Config.Damage * 0.25)
+			self.Humanoid:MoveTo(self.Root.Position)
+
+			local damage = math.max(1, math.floor(humanoid.MaxHealth * self.Config.AttackHealthFraction + 0.5))
+			humanoid:TakeDamage(damage)
+			self.ThreatService:AddDamageThreat(self.Model, self.CurrentTarget, damage)
 		end
 	end
 end
@@ -151,31 +461,35 @@ function NpcController:_runRetreat()
 		return
 	end
 
+	self.RouteMode = "Retreat"
+
 	local delta = self.Root.Position - targetRoot.Position
 	local awayDirection = if delta.Magnitude > 0.01 then delta.Unit else Vector3.new(0, 0, -1)
-	local retreatPoint = self.Root.Position + awayDirection * self.Config.RetreatDistance
+	local retreatPoint = self:_clampToLeash(self.Root.Position + awayDirection * self.Config.RetreatDistance)
 
-	if os.clock() - self.LastPlanClock > 0.8 then
+	if self:_needsReplan(retreatPoint, self.Config.PathDestinationChangeThreshold) and os.clock() - self.LastPlanClock >= self.Config.PathReplanInterval then
 		self.LastPlanClock = os.clock()
-		self:_replan(retreatPoint)
+		self:_replan(retreatPoint, self.CurrentTarget.Character)
 	end
 
-	self:_followPath()
+	self:_followNavigation(self.CurrentTarget.Character)
 end
 
 function NpcController:_runReturn()
-	if os.clock() - self.LastPlanClock > 1 then
+	self.RouteMode = "Return"
+
+	if self:_needsReplan(self.SpawnPosition, self.Config.PathDestinationChangeThreshold) and os.clock() - self.LastPlanClock >= self.Config.PathReplanInterval then
 		self.LastPlanClock = os.clock()
 		self:_replan(self.SpawnPosition)
 	end
 
-	self:_followPath()
+	self:_followNavigation(nil)
 end
 
 function NpcController:Step(deltaTime)
 	if not self.Model.Parent or self.Humanoid.Health <= 0 then
 		if self.AnimationController then
-			self.AnimationController:Update("Idle", 0)
+			self.AnimationController:Update("Idle", 0, "Idle")
 		end
 		return
 	end
@@ -184,7 +498,6 @@ function NpcController:Step(deltaTime)
 
 	local scores = UtilityScorer.Score(self:_getContext())
 	self.State = UtilityScorer.Pick(scores)
-	self:_publishState()
 
 	if self.State == "Patrol" then
 		self:_runPatrol()
@@ -196,12 +509,26 @@ function NpcController:Step(deltaTime)
 		self:_runReturn()
 	end
 
+	self:_publishState()
+
 	if self.AnimationController then
-		self.AnimationController:Update(self.State, self.Root.AssemblyLinearVelocity.Magnitude)
+		local humanoidState = self.Humanoid:GetState()
+		local movementState = if os.clock() <= self.JumpStateUntil
+			or humanoidState == Enum.HumanoidStateType.Jumping
+			or humanoidState == Enum.HumanoidStateType.Freefall
+		then
+			"Jump"
+		else
+			"Grounded"
+		end
+
+		self.AnimationController:Update(self.State, self.Root.AssemblyLinearVelocity.Magnitude, movementState)
 	end
 end
 
 function NpcController:Destroy()
+	self:_clearNavigation()
+
 	if self.AnimationController then
 		self.AnimationController:Destroy()
 		self.AnimationController = nil

@@ -9,6 +9,9 @@ local DEFAULT_ANIMATION_IDS = {
 	Walk = {
 		"rbxassetid://507777826",
 	},
+	Jump = {
+		"rbxassetid://507765000",
+	},
 }
 
 local function ensureAnimator(humanoid)
@@ -83,7 +86,7 @@ function NpcAnimationController.new(model, humanoid)
 	self.CurrentTrack = nil
 	self.SourceByState = {}
 
-	for _, stateName in ipairs({ "Idle", "Walk" }) do
+	for _, stateName in ipairs({ "Idle", "Walk", "Jump" }) do
 		local ids, source = resolveAnimationIds(model, stateName)
 		self.SourceByState[stateName] = source
 		self.Tracks[stateName] = {}
@@ -91,15 +94,16 @@ function NpcAnimationController.new(model, humanoid)
 		for index, animationId in ipairs(ids or {}) do
 			local animation = createAnimation(animationId, stateName .. tostring(index))
 			local track = animator:LoadAnimation(animation)
-			track.Priority = Enum.AnimationPriority.Movement
-			track.Looped = true
+			track.Priority = if stateName == "Jump" then Enum.AnimationPriority.Action else Enum.AnimationPriority.Movement
+			track.Looped = stateName ~= "Jump"
 			self.Tracks[stateName][index] = track
 		end
 	end
 
-	model:SetAttribute("AnimationSource", ("Idle:%s Walk:%s"):format(
+	model:SetAttribute("AnimationSource", ("Idle:%s Walk:%s Jump:%s"):format(
 		self.SourceByState.Idle or "None",
-		self.SourceByState.Walk or "None"
+		self.SourceByState.Walk or "None",
+		self.SourceByState.Jump or "None"
 	))
 
 	return self
@@ -132,9 +136,11 @@ function NpcAnimationController:_getTrack(stateName)
 	return trackList[1]
 end
 
-function NpcAnimationController:Update(aiState, moveSpeed)
+function NpcAnimationController:Update(aiState, moveSpeed, movementState)
 	local desiredState = if moveSpeed > 1 then "Walk" else "Idle"
-	if aiState == "Retreat" or aiState == "Chase" or aiState == "Return" or aiState == "Patrol" then
+	if movementState == "Jump" then
+		desiredState = "Jump"
+	elseif aiState == "Retreat" or aiState == "Chase" or aiState == "Return" or aiState == "Patrol" then
 		desiredState = if moveSpeed > 1 then "Walk" else "Idle"
 	end
 
@@ -142,9 +148,11 @@ function NpcAnimationController:Update(aiState, moveSpeed)
 		if self.CurrentTrack and self.CurrentTrack.IsPlaying then
 			if desiredState == "Walk" then
 				self.CurrentTrack:AdjustSpeed(math.clamp(moveSpeed / 8, 0.75, 1.35))
-			else
+			elseif desiredState == "Idle" then
 				self.CurrentTrack:AdjustSpeed(1)
 			end
+		elseif desiredState == "Jump" and self.CurrentTrack then
+			self.CurrentTrack:Play(0.05)
 		end
 		return
 	end
@@ -158,6 +166,8 @@ function NpcAnimationController:Update(aiState, moveSpeed)
 		track:Play(0.15)
 		if desiredState == "Walk" then
 			track:AdjustSpeed(math.clamp(moveSpeed / 8, 0.75, 1.35))
+		elseif desiredState == "Idle" then
+			track:AdjustSpeed(1)
 		end
 	else
 		self.CurrentTrack = nil

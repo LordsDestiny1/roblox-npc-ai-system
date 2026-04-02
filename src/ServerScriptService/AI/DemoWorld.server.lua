@@ -113,6 +113,15 @@ local function createNpc(parent, name, position)
 	walk.AnimationId = "rbxassetid://507777826"
 	walk.Parent = walkFolder
 
+	local jumpFolder = Instance.new("Folder")
+	jumpFolder.Name = "jump"
+	jumpFolder.Parent = animate
+
+	local jump = Instance.new("Animation")
+	jump.Name = "JumpAnim"
+	jump.AnimationId = "rbxassetid://507765000"
+	jump.Parent = jumpFolder
+
 	model.PrimaryPart = root
 	CollectionService:AddTag(model, "CombatNpc")
 
@@ -137,10 +146,18 @@ local function createNpc(parent, name, position)
 end
 
 local world = ensureFolder("NpcAiDemoWorld")
-createPart(world, "ArenaFloor", Vector3.new(160, 1, 160), Vector3.new(0, 0, 0), Color3.fromRGB(78, 109, 74), true)
-createPart(world, "CentralRock", Vector3.new(8, 10, 8), Vector3.new(0, 5, 12), Color3.fromRGB(102, 102, 102), true)
-createPart(world, "WestCover", Vector3.new(10, 8, 2), Vector3.new(-22, 4, -8), Color3.fromRGB(121, 85, 58), true)
-createPart(world, "EastCover", Vector3.new(10, 8, 2), Vector3.new(24, 4, 6), Color3.fromRGB(121, 85, 58), true)
+createPart(world, "ArenaFloor", Vector3.new(180, 1, 180), Vector3.new(0, 0, 0), Color3.fromRGB(78, 109, 74), true)
+createPart(world, "CentralRock", Vector3.new(10, 12, 10), Vector3.new(0, 6, 14), Color3.fromRGB(102, 102, 102), true)
+createPart(world, "WestCover", Vector3.new(12, 8, 2), Vector3.new(-28, 4, -12), Color3.fromRGB(121, 85, 58), true)
+createPart(world, "EastCover", Vector3.new(12, 8, 2), Vector3.new(30, 4, 8), Color3.fromRGB(121, 85, 58), true)
+createPart(world, "NorthWallLeft", Vector3.new(38, 12, 3), Vector3.new(-24, 6, 28), Color3.fromRGB(93, 93, 93), true)
+createPart(world, "NorthWallRight", Vector3.new(38, 12, 3), Vector3.new(24, 6, 28), Color3.fromRGB(93, 93, 93), true)
+createPart(world, "SouthWallLeft", Vector3.new(32, 10, 3), Vector3.new(-30, 5, -18), Color3.fromRGB(93, 93, 93), true)
+createPart(world, "SouthWallRight", Vector3.new(32, 10, 3), Vector3.new(30, 5, -4), Color3.fromRGB(93, 93, 93), true)
+createPart(world, "JumpCrateA", Vector3.new(4, 3, 4), Vector3.new(-8, 1.5, 4), Color3.fromRGB(145, 102, 71), true)
+createPart(world, "JumpCrateB", Vector3.new(4, 3, 4), Vector3.new(-2, 1.5, 4), Color3.fromRGB(145, 102, 71), true)
+createPart(world, "JumpCrateC", Vector3.new(4, 3, 4), Vector3.new(4, 1.5, 4), Color3.fromRGB(145, 102, 71), true)
+createPart(world, "RaisedLedge", Vector3.new(16, 4, 16), Vector3.new(28, 2, 28), Color3.fromRGB(88, 104, 124), true)
 
 local spawnPad = world:FindFirstChild("SpawnPad")
 if not spawnPad then
@@ -154,5 +171,5 @@ if not spawnPad then
 	spawnPad.Parent = world
 end
 
-createNpc(world, "BanditNpcA", Vector3.new(18, 1, -10))
-createNpc(world, "BanditNpcB", Vector3.new(-18, 1, 16))
+createNpc(world, "BanditNpcA", Vector3.new(26, 1, -10))
+createNpc(world, "BanditNpcB", Vector3.new(-24, 1, 20))
