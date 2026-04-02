@@ -1,0 +1,15 @@
+{
+  "name": "RobloxNpcAiSystem",
+  "tree": {
+    "$className": "DataModel",
+    "ServerScriptService": {
+      "Main": {
+        "$path": "src/ServerScriptService/Main.server.lua"
+      },
+      "AI": {
+        "$path": "src/ServerScriptService/AI"
+      }
+    }
+  }
+}
+

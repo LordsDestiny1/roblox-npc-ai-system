@@ -1,0 +1,7 @@
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx
+*.project.json.lock
+*.sourcemap.json
+
