@@ -1,6 +1,10 @@
 local CollectionService = game:GetService("CollectionService")
 local Workspace = game:GetService("Workspace")
 
+if #CollectionService:GetTagged("CombatNpc") > 0 then
+	return
+end
+
 local function ensureFolder(name)
 	local existing = Workspace:FindFirstChild(name)
 	if existing then

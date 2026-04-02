@@ -24,13 +24,16 @@ function NpcController.new(model, config, threatService, pathPlanner)
 	self.CurrentTarget = nil
 	self.CurrentPath = nil
 	self.CurrentWaypointIndex = 1
+	self.DirectMoveTarget = nil
 	self.LastPlanClock = 0
 	self.LastAttackClock = 0
+	self.LastPathError = nil
 	return self
 end
 
 function NpcController:_publishState()
 	self.Model:SetAttribute("AiState", self.State)
+	self.Model:SetAttribute("LastPathError", self.LastPathError or "")
 
 	local billboard = self.Model:FindFirstChild("StateBillboard")
 	local label = billboard and billboard:FindFirstChildOfClass("TextLabel")
@@ -61,15 +64,25 @@ function NpcController:_refreshThreat()
 end
 
 function NpcController:_replan(destination)
+	self.DirectMoveTarget = destination
 	local waypoints = self.PathPlanner:TryPlan(self.Model:GetDebugId(), self.Root.Position, destination)
 	if waypoints then
 		self.CurrentPath = waypoints
 		self.CurrentWaypointIndex = 1
+		self.LastPathError = nil
+		return
 	end
+
+	self.CurrentPath = nil
+	self.CurrentWaypointIndex = 1
+	self.LastPathError = "Pathfinding fallback"
 end
 
 function NpcController:_followPath()
 	if not self.CurrentPath then
+		if self.DirectMoveTarget then
+			self.Humanoid:MoveTo(self.DirectMoveTarget)
+		end
 		return
 	end
 
@@ -81,6 +94,10 @@ function NpcController:_followPath()
 	self.Humanoid:MoveTo(waypoint.Position)
 	if (waypoint.Position - self.Root.Position).Magnitude <= 3 then
 		self.CurrentWaypointIndex += 1
+
+		if self.CurrentWaypointIndex > #self.CurrentPath then
+			self.CurrentPath = nil
+		end
 	end
 end
 

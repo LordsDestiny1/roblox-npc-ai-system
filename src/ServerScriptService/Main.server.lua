@@ -19,6 +19,28 @@ local function registerNpc(model)
 		return
 	end
 
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	local root = model:FindFirstChild("HumanoidRootPart")
+
+	if not humanoid or not root then
+		warn(("[NpcAI] Skipping %s because it is missing Humanoid or HumanoidRootPart"):format(model:GetFullName()))
+		return
+	end
+
+	if model.PrimaryPart == nil then
+		model.PrimaryPart = root
+	end
+
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			descendant.Anchored = false
+		end
+	end
+
+	if humanoid.WalkSpeed <= 0 then
+		humanoid.WalkSpeed = 10
+	end
+
 	npcService:RegisterNpc(model, defaultConfig)
 end
 
