@@ -97,7 +97,7 @@ function NpcService:RemoveNpc(model)
 	end
 
 	self._controllers[model] = nil
-	self._pathPlanner:Remove(model:GetDebugId())
+	self._pathPlanner:Remove(model)
 	self._threatService:RemoveNpc(model)
 end
 
@@ -136,7 +136,7 @@ function NpcService:Destroy()
 
 	for model, controller in pairs(self._controllers) do
 		controller:Destroy()
-		self._pathPlanner:Remove(model:GetDebugId())
+		self._pathPlanner:Remove(model)
 		self._threatService:RemoveNpc(model)
 	end
 

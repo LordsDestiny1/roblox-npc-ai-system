@@ -272,7 +272,7 @@ function NpcController:_replan(destination, targetCharacter)
 	self:_clearNavigation()
 
 	local plan, errorMessage = self.PathPlanner:TryPlan(
-		self.Model:GetDebugId(),
+		self.Model,
 		self.Root.Position,
 		destination,
 		self.Config.PathOptions
