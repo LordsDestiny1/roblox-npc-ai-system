@@ -239,9 +239,11 @@ function NpcController:_replan(destination, targetCharacter)
 		return true
 	end
 
-	if self.Config.AllowDirectMoveFallback and self:_hasLineOfSight(destination, targetCharacter) then
+	if self.Config.AllowDirectMoveFallback then
 		self.DirectMoveTarget = destination
-		self.LastPathError = "Direct fallback"
+		self.LastWaypointDistance = (destination - self.Root.Position).Magnitude
+		self.LastProgressClock = os.clock()
+		self.LastPathError = if self:_hasLineOfSight(destination, targetCharacter) then "Direct fallback" else "Blind direct fallback"
 		return true
 	end
 
@@ -351,7 +353,8 @@ function NpcController:_followNavigation(targetCharacter)
 			return
 		end
 
-		if not self:_probeForwardJump(waypoint.Position, targetCharacter) then
+		local riseToWaypoint = waypoint.Position.Y - self.Root.Position.Y
+		if riseToWaypoint > 1.25 and not self:_probeForwardJump(waypoint.Position, targetCharacter) then
 			self:_clearNavigation()
 			return
 		end
@@ -373,18 +376,24 @@ function NpcController:_followNavigation(targetCharacter)
 	end
 
 	if self.DirectMoveTarget then
-		if not self:_hasLineOfSight(self.DirectMoveTarget, targetCharacter) then
-			self.LastPathError = "Direct route obstructed"
-			self.DirectMoveTarget = nil
-			return
-		end
-
 		if not self:_probeForwardJump(self.DirectMoveTarget, targetCharacter) then
 			self.DirectMoveTarget = nil
 			return
 		end
 
-		if (self.DirectMoveTarget - self.Root.Position).Magnitude <= self.Config.WaypointReachedDistance then
+		local distance = (self.DirectMoveTarget - self.Root.Position).Magnitude
+		if distance < self.LastWaypointDistance - 0.25 then
+			self.LastProgressClock = os.clock()
+		end
+		self.LastWaypointDistance = distance
+
+		if os.clock() - self.LastProgressClock > self.Config.StuckReplanSeconds then
+			self.LastPathError = "Direct movement stalled"
+			self.DirectMoveTarget = nil
+			return
+		end
+
+		if distance <= self.Config.WaypointReachedDistance then
 			self.DirectMoveTarget = nil
 			return
 		end
@@ -435,20 +444,7 @@ function NpcController:_runChase()
 
 	self:_followNavigation(targetCharacter)
 
-	if (targetRoot.Position - self.Root.Position).Magnitude <= self.Config.AttackRange
-		and os.clock() - self.LastAttackClock >= self.Config.AttackCooldown
-		and self:_hasLineOfSight(targetRoot.Position, targetCharacter)
-	then
-		local humanoid = targetCharacter:FindFirstChildOfClass("Humanoid")
-		if humanoid and humanoid.Health > 0 then
-			self.LastAttackClock = os.clock()
-			self.Humanoid:MoveTo(self.Root.Position)
-
-			local damage = math.max(1, math.floor(humanoid.MaxHealth * self.Config.AttackHealthFraction + 0.5))
-			humanoid:TakeDamage(damage)
-			self.ThreatService:AddDamageThreat(self.Model, self.CurrentTarget, damage)
-		end
-	end
+	self:_tryAttackTarget(targetCharacter, targetRoot)
 end
 
 function NpcController:_runRetreat()
@@ -524,6 +520,41 @@ function NpcController:Step(deltaTime)
 
 		self.AnimationController:Update(self.State, self.Root.AssemblyLinearVelocity.Magnitude, movementState)
 	end
+end
+
+function NpcController:_tryAttackTarget(targetCharacter, targetRoot)
+	if not targetCharacter or not targetRoot then
+		return false
+	end
+
+	if os.clock() - self.LastAttackClock < self.Config.AttackCooldown then
+		return false
+	end
+
+	local humanoid = targetCharacter:FindFirstChildOfClass("Humanoid")
+	if not humanoid or humanoid.Health <= 0 then
+		return false
+	end
+
+	local delta = targetRoot.Position - self.Root.Position
+	local horizontalDistance = horizontal(delta).Magnitude
+	local verticalDistance = math.abs(delta.Y)
+	if horizontalDistance > self.Config.AttackRange or verticalDistance > self.Config.AttackVerticalTolerance then
+		return false
+	end
+
+	local hasClearSwing = self:_hasLineOfSight(targetRoot.Position + Vector3.new(0, 1, 0), targetCharacter)
+	if not hasClearSwing and delta.Magnitude > self.Config.AttackRange * 0.7 then
+		return false
+	end
+
+	self.LastAttackClock = os.clock()
+	self.Humanoid:MoveTo(self.Root.Position)
+
+	local damage = math.max(1, math.floor(humanoid.MaxHealth * self.Config.AttackHealthFraction + 0.5))
+	humanoid:TakeDamage(damage)
+	self.ThreatService:AddDamageThreat(self.Model, self.CurrentTarget, damage)
+	return true
 end
 
 function NpcController:Destroy()
