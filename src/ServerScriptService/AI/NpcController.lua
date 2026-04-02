@@ -29,6 +29,16 @@ function NpcController.new(model, config, threatService, pathPlanner)
 	return self
 end
 
+function NpcController:_publishState()
+	self.Model:SetAttribute("AiState", self.State)
+
+	local billboard = self.Model:FindFirstChild("StateBillboard")
+	local label = billboard and billboard:FindFirstChildOfClass("TextLabel")
+	if label then
+		label.Text = ("%s\n%s"):format(self.Model.Name, self.State)
+	end
+end
+
 function NpcController:_getContext()
 	local targetCharacter = self.CurrentTarget and self.CurrentTarget.Character
 	local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
@@ -152,6 +162,7 @@ function NpcController:Step(deltaTime)
 
 	local scores = UtilityScorer.Score(self:_getContext())
 	self.State = UtilityScorer.Pick(scores)
+	self:_publishState()
 
 	if self.State == "Patrol" then
 		self:_runPatrol()
