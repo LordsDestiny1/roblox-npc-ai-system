@@ -27,6 +27,11 @@ function NpcService:HasNpc(model)
 end
 
 function NpcService:RemoveNpc(model)
+	local controller = self._controllers[model]
+	if controller then
+		controller:Destroy()
+	end
+
 	self._controllers[model] = nil
 	self._pathPlanner:Remove(model:GetDebugId())
 	self._threatService:RemoveNpc(model)
@@ -56,6 +61,12 @@ function NpcService:Destroy()
 	if self._connection then
 		self._connection:Disconnect()
 		self._connection = nil
+	end
+
+	for model, controller in pairs(self._controllers) do
+		controller:Destroy()
+		self._pathPlanner:Remove(model:GetDebugId())
+		self._threatService:RemoveNpc(model)
 	end
 
 	table.clear(self._controllers)

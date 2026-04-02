@@ -86,6 +86,33 @@ local function createNpc(parent, name, position)
 	humanoid.Health = 120
 	humanoid.Parent = model
 
+	local animate = Instance.new("Folder")
+	animate.Name = "Animate"
+	animate.Parent = model
+
+	local idleFolder = Instance.new("Folder")
+	idleFolder.Name = "idle"
+	idleFolder.Parent = animate
+
+	local idle1 = Instance.new("Animation")
+	idle1.Name = "Animation1"
+	idle1.AnimationId = "rbxassetid://507766666"
+	idle1.Parent = idleFolder
+
+	local idle2 = Instance.new("Animation")
+	idle2.Name = "Animation2"
+	idle2.AnimationId = "rbxassetid://507766951"
+	idle2.Parent = idleFolder
+
+	local walkFolder = Instance.new("Folder")
+	walkFolder.Name = "walk"
+	walkFolder.Parent = animate
+
+	local walk = Instance.new("Animation")
+	walk.Name = "WalkAnim"
+	walk.AnimationId = "rbxassetid://507777826"
+	walk.Parent = walkFolder
+
 	model.PrimaryPart = root
 	CollectionService:AddTag(model, "CombatNpc")
 

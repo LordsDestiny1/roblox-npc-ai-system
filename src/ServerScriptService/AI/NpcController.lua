@@ -1,4 +1,5 @@
 local UtilityScorer = require(script.Parent.UtilityScorer)
+local NpcAnimationController = require(script.Parent.NpcAnimationController)
 
 local NpcController = {}
 NpcController.__index = NpcController
@@ -19,6 +20,7 @@ function NpcController.new(model, config, threatService, pathPlanner)
 	self.Config = config
 	self.ThreatService = threatService
 	self.PathPlanner = pathPlanner
+	self.AnimationController = NpcAnimationController.new(model, humanoid)
 	self.State = "Patrol"
 	self.SpawnPosition = root.Position
 	self.CurrentTarget = nil
@@ -172,6 +174,9 @@ end
 
 function NpcController:Step(deltaTime)
 	if not self.Model.Parent or self.Humanoid.Health <= 0 then
+		if self.AnimationController then
+			self.AnimationController:Update("Idle", 0)
+		end
 		return
 	end
 
@@ -189,6 +194,17 @@ function NpcController:Step(deltaTime)
 		self:_runRetreat()
 	elseif self.State == "Return" then
 		self:_runReturn()
+	end
+
+	if self.AnimationController then
+		self.AnimationController:Update(self.State, self.Root.AssemblyLinearVelocity.Magnitude)
+	end
+end
+
+function NpcController:Destroy()
+	if self.AnimationController then
+		self.AnimationController:Destroy()
+		self.AnimationController = nil
 	end
 end
 
