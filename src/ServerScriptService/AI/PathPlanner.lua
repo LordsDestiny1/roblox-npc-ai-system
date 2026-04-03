@@ -31,6 +31,7 @@ local DEFAULT_PATH_OPTIONS = {
 function PathPlanner.new()
 	local self = setmetatable({}, PathPlanner)
 	self._nextAllowedPlanAt = {}
+	self._throttleSeconds = 0.08
 	return self
 end
 
@@ -41,7 +42,7 @@ function PathPlanner:TryPlan(agentId, origin, destination, overrides)
 		return nil, "Path plan is throttled"
 	end
 
-	self._nextAllowedPlanAt[agentId] = now + 0.35
+	self._nextAllowedPlanAt[agentId] = now + self._throttleSeconds
 
 	local options = cloneTable(DEFAULT_PATH_OPTIONS)
 	for key, value in pairs(overrides or {}) do
@@ -55,11 +56,17 @@ function PathPlanner:TryPlan(agentId, origin, destination, overrides)
 	end)
 
 	if not ok or path.Status ~= Enum.PathStatus.Success then
+		pcall(function()
+			path:Destroy()
+		end)
 		return nil, errorMessage or "Path planning failed"
 	end
 
 	local waypoints = path:GetWaypoints()
 	if #waypoints == 0 then
+		pcall(function()
+			path:Destroy()
+		end)
 		return nil, "Path generated no waypoints"
 	end
 
@@ -68,6 +75,26 @@ function PathPlanner:TryPlan(agentId, origin, destination, overrides)
 		Waypoints = waypoints,
 		Destination = destination,
 	}
+end
+
+function PathPlanner:Measure(agentId, origin, destination, overrides)
+	local plan, errorMessage = self:TryPlan(agentId, origin, destination, overrides)
+	if not plan then
+		return nil, errorMessage
+	end
+
+	local totalDistance = 0
+	local previousPosition = origin
+	for _, waypoint in ipairs(plan.Waypoints) do
+		totalDistance = totalDistance + (waypoint.Position - previousPosition).Magnitude
+		previousPosition = waypoint.Position
+	end
+
+	pcall(function()
+		plan.Path:Destroy()
+	end)
+
+	return totalDistance, nil, plan.Waypoints
 end
 
 function PathPlanner:Remove(agentId)

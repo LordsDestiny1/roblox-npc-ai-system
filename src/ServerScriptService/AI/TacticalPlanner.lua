@@ -119,6 +119,19 @@ function TacticalPlanner.BuildRoute(npcPosition, targetRoot, config, context)
 	local leadSeconds = math.clamp(distance / config.InterceptDistanceDivisor, config.MinInterceptSeconds, config.MaxInterceptSeconds)
 	local jitterScale = math.max(0, math.floor(config.RouteJitterMax * 100 + 0.5))
 	local routeJitter = math.random(-jitterScale, jitterScale) / 100
+	local pressureCommitDistance = math.max(config.DirectEngageDistance + 4, config.FlankMinimumDistance * 0.72)
+
+	if distance <= config.DirectEngageDistance
+		and hasLineOfSight
+		and math.abs(verticalDelta) <= config.ParkourGoalHeightTolerance
+	then
+		return {
+			Mode = "DirectPressure",
+			Destination = targetPosition,
+			ExpiresAt = os.clock() + 0.6,
+			TargetSnapshot = targetPosition,
+		}
+	end
 
 	local options = {}
 
@@ -146,9 +159,9 @@ function TacticalPlanner.BuildRoute(npcPosition, targetRoot, config, context)
 		if previousSide ~= "Neutral" and not flankCommitBroken then
 			local optionSide = getSideToken(option.Mode)
 			if optionSide == previousSide then
-				option.Weight = option.Weight * 1.35
+				option.Weight = option.Weight * 1.6
 			elseif optionSide ~= "Neutral" then
-				option.Weight = option.Weight * 0.42
+				option.Weight = option.Weight * 0.24
 			end
 		end
 
@@ -178,7 +191,37 @@ function TacticalPlanner.BuildRoute(npcPosition, targetRoot, config, context)
 			end
 		end
 
-		if distance < 10 then
+		if distance < pressureCommitDistance then
+			if option.Mode == "DirectPressure" then
+				option.Weight = option.Weight * 2.7
+			elseif option.Mode == "InterceptLead" then
+				option.Weight = option.Weight * 1.3
+			elseif option.Mode == "Cutoff" then
+				option.Weight = option.Weight * 0.95
+			elseif hasToken(option.Mode, "Flank")
+				or hasToken(option.Mode, "Wide")
+				or hasToken(option.Mode, "Backdoor")
+				or hasToken(option.Mode, "Pinch")
+			then
+				option.Weight = option.Weight * 0.12
+			end
+		end
+
+		if distance < config.FlankMinimumDistance then
+			if option.Mode == "DirectPressure" then
+				option.Weight = option.Weight * 2.2
+			elseif option.Mode == "InterceptLead" then
+				option.Weight = option.Weight * 1.25
+			elseif option.Mode == "Cutoff" then
+				option.Weight = option.Weight * 0.85
+			elseif hasToken(option.Mode, "Flank")
+				or hasToken(option.Mode, "Wide")
+				or hasToken(option.Mode, "Backdoor")
+				or hasToken(option.Mode, "Pinch")
+			then
+				option.Weight = option.Weight * 0.08
+			end
+		elseif distance < 10 then
 			if hasToken(option.Mode, "Wide") or hasToken(option.Mode, "Backdoor") then
 				option.Weight = option.Weight * 1.25
 			elseif option.Mode == "DirectPressure" then
@@ -201,6 +244,34 @@ function TacticalPlanner.BuildRoute(npcPosition, targetRoot, config, context)
 				option.Weight = option.Weight * 1.3
 			elseif hasToken(option.Mode, "Wide") or hasToken(option.Mode, "Backdoor") then
 				option.Weight = option.Weight * 0.6
+			end
+		end
+
+		if verticalDelta > config.AssistJumpRiseThreshold and not hasLineOfSight then
+			if option.Mode == "DirectPressure" then
+				option.Weight = option.Weight * 0.12
+			elseif option.Mode == "InterceptLead" or option.Mode == "Cutoff" then
+				option.Weight = option.Weight * 0.45
+			elseif hasToken(option.Mode, "Flank") then
+				option.Weight = option.Weight * 1.5
+			elseif hasToken(option.Mode, "Wide") or hasToken(option.Mode, "Backdoor") then
+				option.Weight = option.Weight * 1.85
+			end
+		end
+
+		if hasLineOfSight and math.abs(verticalDelta) <= config.ParkourGoalHeightTolerance then
+			if distance <= 26 then
+				if option.Mode == "DirectPressure" then
+					option.Weight = option.Weight * 3.1
+				elseif option.Mode == "InterceptLead" then
+					option.Weight = option.Weight * 1.2
+				elseif option.Mode == "Cutoff" then
+					option.Weight = option.Weight * 0.5
+				elseif hasToken(option.Mode, "Flank") then
+					option.Weight = option.Weight * 0.16
+				elseif hasToken(option.Mode, "Wide") or hasToken(option.Mode, "Backdoor") or hasToken(option.Mode, "Pinch") then
+					option.Weight = option.Weight * 0.05
+				end
 			end
 		end
 	end

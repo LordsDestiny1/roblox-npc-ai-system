@@ -64,8 +64,8 @@ function ThreatService:GetBestTarget(npcModel, originPosition, maxDistance)
 		if root and humanoid and humanoid.Health > 0 then
 			local distance = (root.Position - originPosition).Magnitude
 			if distance <= maxDistance then
-				local distanceBonus = math.max(0, maxDistance - distance)
-				local score = baseThreat + distanceBonus * 0.15
+				local normalizedProximity = 1 - math.clamp(distance / math.max(maxDistance, 1), 0, 1)
+				local score = baseThreat + normalizedProximity * 18
 				if score > bestScore then
 					bestScore = score
 					bestPlayer = player
@@ -85,7 +85,8 @@ function ThreatService:SeedFromNearbyPlayers(npcModel, originPosition, radius)
 		if root and humanoid and humanoid.Health > 0 then
 			local distance = (root.Position - originPosition).Magnitude
 			if distance <= radius then
-				self:AddProximityThreat(npcModel, player, math.max(1, radius - distance))
+				local normalizedProximity = 1 - math.clamp(distance / math.max(radius, 1), 0, 1)
+				self:AddProximityThreat(npcModel, player, 4 + normalizedProximity * 8)
 			end
 		end
 	end
@@ -96,4 +97,3 @@ function ThreatService:RemoveNpc(npcModel)
 end
 
 return ThreatService
-
